@@ -1,16 +1,16 @@
 (async function ultimateUnsubscribe() {
-    console.log('🚀 ЗАПУСК МАССОВОЙ ОТПИСКИ (оптимизированная версия)');
+    console.log('🚀 ЗАПУСК МАССОВОЙ ОТПИСКИ (блочная версия)');
 
     // ---------- Настройки ----------
+    const CHANNELS_PER_BLOCK = 3;       // сколько каналов отписывать за 1 блок
     const PAUSE_BETWEEN_UNSUB = 1200;   // мс между отписками
     const SCROLL_WAIT = 2000;           // мс ожидания после каждой прокрутки
-    const MAX_SCROLL_ATTEMPTS = 50;     // макс. прокруток (но обычно хватает)
-    const MIN_CHANNELS_TO_START = 50;   // минимальное число каналов перед стартом (можно уменьшить)
-
+    const MAX_SCROLL_ATTEMPTS = 30;     // макс. прокруток за один блок
+    const MIN_CHANNELS_TO_START = 3;    // минимальное число каналов для старта
+    
     // ---------- Вспомогательные функции ----------
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-    // Ожидание появления элемента с таймаутом (проверка каждые 300 мс)
     function waitForElement(selector, timeout = 8000) {
         return new Promise((resolve) => {
             const start = Date.now();
@@ -24,20 +24,16 @@
         });
     }
 
-    // Простой надёжный клик (без двойных событий)
     function clickElement(element, description = '') {
         if (!element) return;
         element.scrollIntoView({ block: 'center' });
-        // Небольшая задержка перед кликом, чтобы элемент точно стал видимым
         setTimeout(() => {
             element.click();
-            // Дополнительно посылаем событие click (на случай, если обычный не сработал)
             element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
         }, 200);
         if (description) console.log(`   🖱️ ${description}`);
     }
 
-    // Получение имени канала
     function getChannelName(channel) {
         const selectors = ['#channel-name a', '#text-container a', 'ytd-channel-name a', 'a#channel-name'];
         for (const sel of selectors) {
@@ -56,26 +52,32 @@
         return 'Неизвестный канал';
     }
 
-    // ---------- Функция отписки от одного канала ----------
+    function getTotalSubscribed() {
+        const allChannels = document.querySelectorAll('ytd-channel-renderer');
+        let count = 0;
+        for (const ch of allChannels) {
+            if (ch.querySelector('ytd-subscribe-button-renderer[subscribed]')) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     async function unsubscribeOne(channel) {
         const name = getChannelName(channel);
-        console.log(`\n🔹 ${name}`);
+        console.log(`   🔹 ${name}`);
 
-        // 1. Найти кнопку "Подписан"
         const subBtn = channel.querySelector('ytd-subscribe-button-renderer[subscribed] button');
         if (!subBtn) {
             console.log('   ⏭️ нет кнопки подписки');
             return false;
         }
 
-        // 2. Клик по кнопке (простой)
         clickElement(subBtn, 'кнопка "Подписан"');
-        await sleep(800); // даём время на появление диалога/меню
+        await sleep(800);
 
-        // 3. Ожидаем диалог
         let dialog = await waitForElement('yt-confirm-dialog-renderer', 6000);
         if (!dialog) {
-            // Если диалог не появился, пробуем меню
             console.log('   ⏳ диалог не появился, ищем меню...');
             const menu = await waitForElement('tp-yt-paper-listbox, paper-menu, ytd-menu-popup-renderer', 4000);
             if (menu) {
@@ -106,10 +108,8 @@
             }
         }
 
-        // 4. Найти синюю кнопку подтверждения
         console.log('   🔍 ищем кнопку подтверждения...');
         let confirmBtn = null;
-        // Ищем по aria-label или тексту
         const allButtons = dialog.querySelectorAll('button');
         for (const btn of allButtons) {
             const aria = btn.getAttribute('aria-label') || '';
@@ -120,7 +120,6 @@
                 break;
             }
         }
-        // Если не нашли, пробуем #confirm-button
         if (!confirmBtn) {
             const wrapper = dialog.querySelector('#confirm-button');
             if (wrapper) {
@@ -132,16 +131,14 @@
             return false;
         }
 
-        // 5. Клик по синей кнопке
         clickElement(confirmBtn, 'синяя кнопка "Отказаться"');
         await sleep(1000);
         console.log('   ✅ отписан');
         return true;
     }
 
-    // ---------- Функция бесконечной прокрутки для загрузки ВСЕХ каналов ----------
-    async function scrollToLoadAllChannels() {
-        console.log('🔄 Начинаем загрузку всех подписок (может занять время)...');
+    async function scrollToLoadChannels() {
+        console.log('   🔄 Загрузка каналов...');
         let lastHeight = 0;
         let noChangeCount = 0;
         let scrollAttempts = 0;
@@ -153,68 +150,131 @@
             const newHeight = document.documentElement.scrollHeight;
             if (newHeight === lastHeight) {
                 noChangeCount++;
-                // Если высота не меняется несколько раз подряд, считаем, что загрузка завершена
                 if (noChangeCount >= 3) {
-                    console.log('📦 Высота страницы стабильна – все каналы загружены.');
                     break;
                 }
             } else {
                 noChangeCount = 0;
                 lastHeight = newHeight;
-                console.log(`🔄 Прокрутка ${scrollAttempts + 1}, загружено элементов: ${document.querySelectorAll('ytd-channel-renderer').length}`);
             }
             scrollAttempts++;
         }
 
-        // Дополнительная пауза, чтобы точно всё отрисовалось
-        await sleep(2000);
-        console.log(`📊 Всего загружено каналов: ${document.querySelectorAll('ytd-channel-renderer').length}`);
+        await sleep(1000);
+        const total = getTotalSubscribed();
+        console.log(`   📊 Загружено каналов: ${total}`);
         window.scrollTo(0, 0);
         await sleep(500);
     }
 
-    // ---------- Основной процесс ----------
-    // Шаг 1: Загружаем все каналы (бесконечная прокрутка)
-    await scrollToLoadAllChannels();
+    async function processBlock(blockNumber, channels) {
+        console.log(`\n📦 БЛОК #${blockNumber} (${channels.length} каналов)`);
+        
+        let successCount = 0;
+        let failCount = 0;
 
-    // Шаг 2: Собираем все подписанные каналы
-    let allChannels = document.querySelectorAll('ytd-channel-renderer');
-    let subscribedChannels = [];
-    for (const ch of allChannels) {
-        if (ch.querySelector('ytd-subscribe-button-renderer[subscribed]')) {
-            subscribedChannels.push(ch);
+        for (let i = 0; i < channels.length; i++) {
+            const channel = channels[i];
+            console.log(`   Канал ${i + 1}/${channels.length}`);
+            const ok = await unsubscribeOne(channel);
+            if (ok) successCount++; else failCount++;
+            await sleep(PAUSE_BETWEEN_UNSUB);
+        }
+
+        console.log(`   📊 Блок #${blockNumber}: успешно ${successCount}, ошибок ${failCount}`);
+        return { successCount, failCount };
+    }
+
+    async function refreshPage() {
+        console.log('\n🔄 Перезагрузка страницы для очистки DOM...');
+        // Сохраняем URL текущей страницы
+        const currentUrl = window.location.href;
+        
+        // Перезагружаем страницу
+        window.location.reload();
+        
+        // Ждем загрузки страницы
+        await new Promise((resolve) => {
+            const checkReady = () => {
+                if (document.readyState === 'complete') {
+                    resolve();
+                } else {
+                    setTimeout(checkReady, 500);
+                }
+            };
+            checkReady();
+        });
+        
+        // Дополнительная задержка для полной загрузки YouTube
+        console.log('   ⏳ Ждем полной загрузки страницы...');
+        await sleep(5000);
+        
+        // Проверяем, что мы на нужной странице
+        if (window.location.href !== currentUrl) {
+            console.log('   ⚠️ URL изменился, пытаемся вернуться...');
+            window.location.href = currentUrl;
+            await sleep(5000);
+        }
+        
+        console.log('   ✅ Страница перезагружена');
+    }
+
+    // ---------- Основной процесс ----------
+    console.log('📌 Начинаем отписку блоками по', CHANNELS_PER_BLOCK, 'канала');
+
+    let totalSuccess = 0;
+    let totalFail = 0;
+    let blockNumber = 0;
+    let hasMoreChannels = true;
+
+    while (hasMoreChannels) {
+        blockNumber++;
+        
+        // Загружаем каналы
+        await scrollToLoadChannels();
+        
+        // Собираем подписанные каналы
+        const allChannels = document.querySelectorAll('ytd-channel-renderer');
+        const subscribedChannels = [];
+        for (const ch of allChannels) {
+            if (ch.querySelector('ytd-subscribe-button-renderer[subscribed]')) {
+                subscribedChannels.push(ch);
+            }
+        }
+
+        console.log(`\n📊 Найдено подписанных каналов: ${subscribedChannels.length}`);
+
+        if (subscribedChannels.length === 0) {
+            console.log('🎉 Все подписки отписаны!');
+            hasMoreChannels = false;
+            break;
+        }
+
+        // Берем только первые CHANNELS_PER_BLOCK каналов
+        const channelsToProcess = subscribedChannels.slice(0, CHANNELS_PER_BLOCK);
+        
+        // Обрабатываем блок
+        const result = await processBlock(blockNumber, channelsToProcess);
+        totalSuccess += result.successCount;
+        totalFail += result.failCount;
+
+        // Проверяем, остались ли еще подписки
+        const remaining = getTotalSubscribed();
+        if (remaining === 0) {
+            console.log('🎉 Все подписки отписаны!');
+            hasMoreChannels = false;
+            break;
+        }
+
+        // Перезагружаем страницу перед следующим блоком
+        if (remaining > 0) {
+            console.log(`\n📊 Осталось подписок: ${remaining}`);
+            console.log('⏳ Пауза перед следующим блоком...');
+            await sleep(3000);
+            await refreshPage();
         }
     }
 
-    console.log(`\n📌 Найдено подписанных каналов: ${subscribedChannels.length}`);
-
-    if (subscribedChannels.length === 0) {
-        console.log('🎉 У вас нет подписок!');
-        return;
-    }
-
-    // Шаг 3: Отписываемся от всех
-    let successCount = 0;
-    let failCount = 0;
-
-    for (let i = 0; i < subscribedChannels.length; i++) {
-        const channel = subscribedChannels[i];
-        console.log(`\n--- Канал ${i + 1}/${subscribedChannels.length} ---`);
-        const ok = await unsubscribeOne(channel);
-        if (ok) successCount++; else failCount++;
-        await sleep(PAUSE_BETWEEN_UNSUB);
-    }
-
-    // Шаг 4: Проверяем, не появились ли новые подписки (если прокрутка не догрузила)
-    // (обычно после отписки они исчезают, но на всякий случай)
-    const remaining = document.querySelectorAll('ytd-subscribe-button-renderer[subscribed]');
-    if (remaining.length > 0) {
-        console.log(`⚠️ Осталось ещё ${remaining.length} подписанных каналов. Возможно, они не прогрузились ранее.`);
-        console.log('🔄 Запускаем повторную прокрутку и отписку...');
-        // Можно рекурсивно вызвать, но для простоты просто предложим запустить скрипт ещё раз.
-        console.log('👉 Если хотите, запустите скрипт снова или обновите страницу.');
-    }
-
-    console.log(`\n📊 ИТОГ: успешно отписано ${successCount}, ошибок ${failCount}`);
+    console.log(`\n📊 ИТОГО: успешно отписано ${totalSuccess}, ошибок ${totalFail}`);
     console.log('✅ СКРИПТ ЗАВЕРШЁН.');
 })();
