@@ -1,14 +1,11 @@
 (async function ultimateUnsubscribe() {
-    console.log('🚀 ЗАПУСК МАССОВОЙ ОТПИСКИ (блочная версия)');
+    console.log('🚀 ЗАПУСК МАССОВОЙ ОТПИСКИ (Очистка DOM + Подгрузка)');
+    console.log('⚠️ Убедитесь, что вы находитесь на странице: https://www.youtube.com/feed/channels');
 
-    // ---------- Настройки ----------
-    const CHANNELS_PER_BLOCK = 3;       // сколько каналов отписывать за 1 блок
-    const PAUSE_BETWEEN_UNSUB = 1200;   // мс между отписками
-    const SCROLL_WAIT = 2000;           // мс ожидания после каждой прокрутки
-    const MAX_SCROLL_ATTEMPTS = 30;     // макс. прокруток за один блок
-    const MIN_CHANNELS_TO_START = 3;    // минимальное число каналов для старта
-    
-    // ---------- Вспомогательные функции ----------
+    const BATCH_SIZE = 100;             // Получаем ровно 100 первых подписок за раз
+    const PAUSE_BETWEEN_UNSUB = 2000;   // Пауза между отписками (2 сек для безопасности от временных банов YouTube)
+    const PAUSE_AFTER_BATCH = 4000;     // Пауза после блока для подгрузки новых данных YouTube
+
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
     function waitForElement(selector, timeout = 8000) {
@@ -35,7 +32,7 @@
     }
 
     function getChannelName(channel) {
-        const selectors = ['#channel-name a', '#text-container a', 'ytd-channel-name a', 'a#channel-name'];
+        const selectors = ['#channel-name a', '#text-container a', 'ytd-channel-name a', 'a#channel-name', '#channel-title'];
         for (const sel of selectors) {
             const el = channel.querySelector(sel);
             if (el) {
@@ -52,15 +49,16 @@
         return 'Неизвестный канал';
     }
 
-    function getTotalSubscribed() {
+    function getSubscribedChannels() {
+        // Ищем только те каналы, у которых кнопка подписки в состоянии "subscribed"
         const allChannels = document.querySelectorAll('ytd-channel-renderer');
-        let count = 0;
+        const subscribed = [];
         for (const ch of allChannels) {
             if (ch.querySelector('ytd-subscribe-button-renderer[subscribed]')) {
-                count++;
+                subscribed.push(ch);
             }
         }
-        return count;
+        return subscribed;
     }
 
     async function unsubscribeOne(channel) {
@@ -69,212 +67,130 @@
 
         const subBtn = channel.querySelector('ytd-subscribe-button-renderer[subscribed] button');
         if (!subBtn) {
-            console.log('   ⏭️ нет кнопки подписки');
+            console.log('   ⏭️ уже отписан или нет кнопки');
             return false;
         }
 
-        clickElement(subBtn, 'кнопка "Подписан"');
+        clickElement(subBtn, 'нажатие "Подписан"');
         await sleep(800);
 
-        let dialog = await waitForElement('yt-confirm-dialog-renderer', 6000);
+        let dialog = await waitForElement('yt-confirm-dialog-renderer', 4000);
         if (!dialog) {
+            // Иногда открывается не диалог, а выпадающее меню
             console.log('   ⏳ диалог не появился, ищем меню...');
-            const menu = await waitForElement('tp-yt-paper-listbox, paper-menu, ytd-menu-popup-renderer', 4000);
+            const menu = await waitForElement('tp-yt-paper-listbox, paper-menu, ytd-menu-popup-renderer', 3000);
             if (menu) {
                 const items = menu.querySelectorAll('ytd-menu-service-item-renderer, paper-item, tp-yt-paper-item, div[role="menuitem"]');
                 let found = false;
                 for (const item of items) {
                     const text = item.textContent.trim();
                     if (text.includes('Отписаться') || text.includes('Unsubscribe')) {
-                        clickElement(item, 'пункт "Отписаться"');
+                        clickElement(item, 'выбор "Отписаться"');
                         found = true;
                         break;
                     }
                 }
                 if (found) {
                     await sleep(800);
-                    dialog = await waitForElement('yt-confirm-dialog-renderer', 6000);
-                    if (!dialog) {
-                        console.log('   ❌ диалог после меню не появился');
-                        return false;
-                    }
-                } else {
-                    console.log('   ❌ пункт "Отписаться" не найден');
-                    return false;
+                    dialog = await waitForElement('yt-confirm-dialog-renderer', 4000);
                 }
-            } else {
-                console.log('   ❌ ни диалог, ни меню не найдены');
-                return false;
             }
         }
 
-        console.log('   🔍 ищем кнопку подтверждения...');
-        let confirmBtn = null;
-        const allButtons = dialog.querySelectorAll('button');
-        for (const btn of allButtons) {
-            const aria = btn.getAttribute('aria-label') || '';
-            const text = btn.textContent.trim();
-            if (aria.includes('Отказаться от подписки') || aria.includes('Unsubscribe') ||
-                text.includes('Отказаться от подписки') || text.includes('Unsubscribe')) {
-                confirmBtn = btn;
-                break;
-            }
-        }
-        if (!confirmBtn) {
-            const wrapper = dialog.querySelector('#confirm-button');
-            if (wrapper) {
-                confirmBtn = wrapper.querySelector('button') || wrapper;
-            }
-        }
-        if (!confirmBtn) {
-            console.log('   ❌ кнопка подтверждения не найдена');
-            return false;
-        }
-
-        clickElement(confirmBtn, 'синяя кнопка "Отказаться"');
-        await sleep(1000);
-        console.log('   ✅ отписан');
-        return true;
-    }
-
-    async function scrollToLoadChannels() {
-        console.log('   🔄 Загрузка каналов...');
-        let lastHeight = 0;
-        let noChangeCount = 0;
-        let scrollAttempts = 0;
-
-        while (scrollAttempts < MAX_SCROLL_ATTEMPTS) {
-            window.scrollTo(0, document.documentElement.scrollHeight);
-            await sleep(SCROLL_WAIT);
-
-            const newHeight = document.documentElement.scrollHeight;
-            if (newHeight === lastHeight) {
-                noChangeCount++;
-                if (noChangeCount >= 3) {
+        if (dialog) {
+            console.log('   🔍 ищем кнопку подтверждения...');
+            let confirmBtn = null;
+            const allButtons = dialog.querySelectorAll('button');
+            for (const btn of allButtons) {
+                const aria = btn.getAttribute('aria-label') || '';
+                const text = btn.textContent.trim();
+                if (aria.includes('Отказаться от подписки') || aria.includes('Unsubscribe') ||
+                    text.includes('Отказаться от подписки') || text.includes('Отписаться')) {
+                    confirmBtn = btn;
                     break;
                 }
-            } else {
-                noChangeCount = 0;
-                lastHeight = newHeight;
             }
-            scrollAttempts++;
-        }
-
-        await sleep(1000);
-        const total = getTotalSubscribed();
-        console.log(`   📊 Загружено каналов: ${total}`);
-        window.scrollTo(0, 0);
-        await sleep(500);
-    }
-
-    async function processBlock(blockNumber, channels) {
-        console.log(`\n📦 БЛОК #${blockNumber} (${channels.length} каналов)`);
-        
-        let successCount = 0;
-        let failCount = 0;
-
-        for (let i = 0; i < channels.length; i++) {
-            const channel = channels[i];
-            console.log(`   Канал ${i + 1}/${channels.length}`);
-            const ok = await unsubscribeOne(channel);
-            if (ok) successCount++; else failCount++;
-            await sleep(PAUSE_BETWEEN_UNSUB);
-        }
-
-        console.log(`   📊 Блок #${blockNumber}: успешно ${successCount}, ошибок ${failCount}`);
-        return { successCount, failCount };
-    }
-
-    async function refreshPage() {
-        console.log('\n🔄 Перезагрузка страницы для очистки DOM...');
-        // Сохраняем URL текущей страницы
-        const currentUrl = window.location.href;
-        
-        // Перезагружаем страницу
-        window.location.reload();
-        
-        // Ждем загрузки страницы
-        await new Promise((resolve) => {
-            const checkReady = () => {
-                if (document.readyState === 'complete') {
-                    resolve();
-                } else {
-                    setTimeout(checkReady, 500);
+            if (!confirmBtn) {
+                const wrapper = dialog.querySelector('#confirm-button');
+                if (wrapper) {
+                    confirmBtn = wrapper.querySelector('button') || wrapper;
                 }
-            };
-            checkReady();
-        });
-        
-        // Дополнительная задержка для полной загрузки YouTube
-        console.log('   ⏳ Ждем полной загрузки страницы...');
-        await sleep(5000);
-        
-        // Проверяем, что мы на нужной странице
-        if (window.location.href !== currentUrl) {
-            console.log('   ⚠️ URL изменился, пытаемся вернуться...');
-            window.location.href = currentUrl;
-            await sleep(5000);
+            }
+            if (confirmBtn) {
+                clickElement(confirmBtn, 'подтверждение "Отказаться"');
+                await sleep(1000);
+                console.log('   ✅ отписан');
+                return true;
+            } else {
+                console.log('   ❌ кнопка подтверждения не найдена');
+            }
+        } else {
+            console.log('   ❌ диалог не появился');
         }
-        
-        console.log('   ✅ Страница перезагружена');
+        return false;
+    }
+
+    async function scrollToBottom() {
+        console.log('   📜 Прокрутка вниз для подгрузки новых каналов YouTube...');
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        await sleep(1500);
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        await sleep(1500);
     }
 
     // ---------- Основной процесс ----------
-    console.log('📌 Начинаем отписку блоками по', CHANNELS_PER_BLOCK, 'канала');
-
+    console.log(`📌 Начинаем отписку блоками по ${BATCH_SIZE} каналов с полной очисткой DOM`);
+    
     let totalSuccess = 0;
     let totalFail = 0;
     let blockNumber = 0;
-    let hasMoreChannels = true;
+    let attemptsWithoutNewChannels = 0;
 
-    while (hasMoreChannels) {
+    while (attemptsWithoutNewChannels < 3) {
         blockNumber++;
         
-        // Загружаем каналы
-        await scrollToLoadChannels();
-        
-        // Собираем подписанные каналы
-        const allChannels = document.querySelectorAll('ytd-channel-renderer');
-        const subscribedChannels = [];
-        for (const ch of allChannels) {
-            if (ch.querySelector('ytd-subscribe-button-renderer[subscribed]')) {
-                subscribedChannels.push(ch);
-            }
-        }
-
-        console.log(`\n📊 Найдено подписанных каналов: ${subscribedChannels.length}`);
+        // 1. Получаем текущие подписки из DOM
+        const subscribedChannels = getSubscribedChannels();
+        console.log(`\n📊 Блок #${blockNumber}: найдено подписок на странице: ${subscribedChannels.length}`);
 
         if (subscribedChannels.length === 0) {
-            console.log('🎉 Все подписки отписаны!');
-            hasMoreChannels = false;
-            break;
+            attemptsWithoutNewChannels++;
+            console.log(`   ⚠️ Каналы не найдены. Попытка подгрузить еще раз (${attemptsWithoutNewChannels}/3)...`);
+            await scrollToBottom();
+            await sleep(PAUSE_AFTER_BATCH);
+            continue;
         }
 
-        // Берем только первые CHANNELS_PER_BLOCK каналов
-        const channelsToProcess = subscribedChannels.slice(0, CHANNELS_PER_BLOCK);
+        attemptsWithoutNewChannels = 0; // Сброс счетчика, так как каналы найдены
+
+        // 2. Берем строго первые BATCH_SIZE (100) каналов
+        const channelsToProcess = subscribedChannels.slice(0, BATCH_SIZE);
+        console.log(`   Обрабатываем ${channelsToProcess.length} каналов...`);
         
-        // Обрабатываем блок
-        const result = await processBlock(blockNumber, channelsToProcess);
-        totalSuccess += result.successCount;
-        totalFail += result.failCount;
-
-        // Проверяем, остались ли еще подписки
-        const remaining = getTotalSubscribed();
-        if (remaining === 0) {
-            console.log('🎉 Все подписки отписаны!');
-            hasMoreChannels = false;
-            break;
+        // 3. Отписываемся и УДАЛЯЕМ из DOM и памяти
+        for (let i = 0; i < channelsToProcess.length; i++) {
+            const channel = channelsToProcess[i];
+            console.log(`   Канал ${i + 1}/${channelsToProcess.length}`);
+            
+            const ok = await unsubscribeOne(channel);
+            if (ok) totalSuccess++; else totalFail++;
+            
+            // !!! ПОЛНОЕ УДАЛЕНИЕ ЭЛЕМЕНТА ИЗ DOM И ПАМЯТИ !!!
+            // Это предотвращает повторную обработку и очищает память браузера
+            channel.remove();
+            
+            await sleep(PAUSE_BETWEEN_UNSUB);
         }
 
-        // Перезагружаем страницу перед следующим блоком
-        if (remaining > 0) {
-            console.log(`\n📊 Осталось подписок: ${remaining}`);
-            console.log('⏳ Пауза перед следующим блоком...');
-            await sleep(3000);
-            await refreshPage();
-        }
+        console.log(`\n📊 Промежуточный итог: успешно ${totalSuccess}, ошибок ${totalFail}`);
+        console.log('⏳ Пауза перед подгрузкой следующей порции...');
+        
+        // 4. Подгружаем новые каналы через скролл (YouTube сам загрузит следующие ~30-100)
+        await scrollToBottom();
+        await sleep(PAUSE_AFTER_BATCH);
     }
 
-    console.log(`\n📊 ИТОГО: успешно отписано ${totalSuccess}, ошибок ${totalFail}`);
-    console.log('✅ СКРИПТ ЗАВЕРШЁН.');
+    console.log(`\n🎉 ВСЕ ГОТОВО! Больше каналов для отписки не найдено.`);
+    console.log(`📊 ИТОГО: успешно отписано ${totalSuccess}, ошибок ${totalFail}`);
+    console.log('✅ Скрипт завершил работу.');
 })();
