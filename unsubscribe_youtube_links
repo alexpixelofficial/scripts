@@ -1,12 +1,18 @@
-(async function ultimateUnsubscribeV3() {
-  console.log('🚀 МАССОВАЯ ОТПИСКА v3 (фикс полок ytd-shelf-renderer и подгрузки)');
+(async function ultimateUnsubscribeV4() {
+  console.log('🚀 МАССОВАЯ ОТПИСКА v4 — чистит пустые блоки YouTube и догружает до конца');
 
-  const PAUSE_BETWEEN = 1500;
-  const MAX_EMPTY_ROUNDS = 5;
+  const PAUSE_BETWEEN = 1200;
+  const MAX_EMPTY_ROUNDS = 6;
+  const MAX_ROUNDS = 300;
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const $  = s => document.querySelector(s);
+  const $$ = s => Array.from(document.querySelectorAll(s));
 
-  // ОДИН клик
+  // статистика сохраняется между F5
+  const stats = JSON.parse(sessionStorage.getItem('unsub_stats') || '{"ok":0,"fail":0}');
+  if (stats.ok || stats.fail) console.log(`📦 Продолжаем сессию: уже отписано ${stats.ok}, ошибок ${stats.fail}`);
+
   function click(el, desc = '') {
     if (!el) return;
     el.scrollIntoView({ block: 'center' });
@@ -25,27 +31,68 @@
     });
   }
 
-  // Находим каналы и предварительно зачищаем пустые полки
-  function getSubscribed() {
-    // Находим все полки и удаляем те, где уже нет каналов
-    document.querySelectorAll('ytd-shelf-renderer').forEach(shelf => {
-      if (!shelf.querySelector('ytd-channel-renderer')) {
-        shelf.remove();
-      }
-    });
-
-    return [...document.querySelectorAll('ytd-channel-renderer')].filter(ch => {
-      const btn = ch.querySelector('ytd-subscribe-button-renderer');
-      if (!btn) return false;
-      const txt = btn.textContent || '';
-      return btn.hasAttribute('subscribed') ||
-             txt.includes('Вы подписаны') || txt.includes('Subscribed');
-    });
-  }
-
-  function name(ch) {
+  const channelsInDom = () => $$('ytd-channel-renderer');
+  const isSubscribed = ch => {
+    const btn = ch.querySelector('ytd-subscribe-button-renderer');
+    if (!btn) return false;
+    const txt = btn.textContent || '';
+    return btn.hasAttribute('subscribed') || /Вы подписаны|Subscribed/.test(txt);
+  };
+  const getSubscribed = () => channelsInDom().filter(isSubscribed);
+  const name = ch => {
     const a = ch.querySelector('#channel-name a, ytd-channel-name a, a[href*="/@"]');
     return a ? a.textContent.trim() : 'канал';
+  };
+
+  // 🧹 ЧИСТКА пустых блоков YouTube, которые забивают страницу и ломают скролл
+  function cleanEmptyBlocks() {
+    let removed = 0;
+    // пустые полки
+    $$('ytd-shelf-renderer').forEach(el => {
+      if (!el.querySelector('ytd-channel-renderer')) { el.remove(); removed++; }
+    });
+    // пустые сетки и rich-блоки
+    $$('ytd-grid-renderer, ytd-rich-section-renderer, ytd-rich-shelf-renderer').forEach(el => {
+      if (!el.querySelector('ytd-channel-renderer')) { el.remove(); removed++; }
+    });
+    // те самые «мёртвые» ytd-item-section-renderer с пустым #contents.
+    // ВАЖНО: не удаляем секцию, если внутри есть continuation — это триггер подгрузки!
+    $$('ytd-item-section-renderer').forEach(el => {
+      const hasCh   = el.querySelector('ytd-channel-renderer');
+      const hasCont = el.querySelector('ytd-continuation-item-renderer');
+      if (!hasCh && !hasCont) { el.remove(); removed++; }
+    });
+    if (removed) console.log('🧹 Удалено пустых блоков: ' + removed);
+    return removed;
+  }
+
+  async function waitSpinner(timeout = 5000) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeout) {
+      const sp = $('tp-yt-paper-spinner-lite[active]') || $('tp-yt-paper-spinner-lite[aria-hidden="false"]');
+      if (!sp) return;
+      await sleep(300);
+    }
+  }
+
+  // умная подгрузка: скроллим всё, что скроллится + дёргаем continuation
+  async function forceLoadMore() {
+    const before = channelsInDom().length;
+    for (let i = 0; i < 6; i++) {
+      cleanEmptyBlocks(); // сначала освобождаем страницу от мёртвых секций
+      const cont = $('ytd-continuation-item-renderer');
+      if (cont) cont.scrollIntoView({ block: 'center' });
+      window.scrollTo(0, document.body.scrollHeight);
+      const content = $('#content');
+      if (content) content.scrollTop = content.scrollHeight;
+      window.dispatchEvent(new Event('scroll'));
+      document.dispatchEvent(new Event('scroll'));
+      await waitSpinner();
+      await sleep(900);
+      if (channelsInDom().length > before) return true;
+      if (!cont) break; // подгружать больше нечего
+    }
+    return channelsInDom().length > before;
   }
 
   async function unsubOne(ch) {
@@ -69,9 +116,10 @@
     }
     if (!dialog) { console.log('   ❌ нет диалога'); return false; }
 
-    const confirmBtn = [...dialog.querySelectorAll('button')]
-      .find(b => /Отказаться|Отписаться|Unsubscribe/i.test(b.textContent + (b.getAttribute('aria-label') || '')))
-      || dialog.querySelector('#confirm-button button, #confirm-button');
+    const confirmBtn =
+      Array.from(dialog.querySelectorAll('button'))
+        .find(b => /Отказаться|Отписаться|Unsubscribe/i.test(b.textContent + (b.getAttribute('aria-label') || ''))) ||
+      dialog.querySelector('#confirm-button button, #confirm-button');
     if (!confirmBtn) { console.log('   ❌ нет кнопки подтверждения'); return false; }
 
     click(confirmBtn, 'подтверждение');
@@ -80,27 +128,16 @@
     return true;
   }
 
-  // Жёсткая подгрузка с учетом очистки пустых полок
-  async function forceLoadMore() {
-    const content = document.querySelector('#content');
-    const before = document.querySelectorAll('ytd-channel-renderer').length;
-    for (let i = 0; i < 6; i++) {
-      const h = document.body.scrollHeight;
-      window.scrollTo(0, h);
-      if (content) content.scrollTo(0, h);
-      window.dispatchEvent(new Event('scroll'));
-      document.dispatchEvent(new Event('scroll'));
-      await sleep(1200);
-      if (document.querySelectorAll('ytd-channel-renderer').length > before) break;
-    }
-    await sleep(800);
-  }
-
   // ---------- основной цикл ----------
-  let ok = 0, fail = 0, empty = 0, round = 0;
+  let empty = 0, round = 0;
 
-  while (empty < MAX_EMPTY_ROUNDS) {
+  while (empty < MAX_EMPTY_ROUNDS && round < MAX_ROUNDS) {
     round++;
+    cleanEmptyBlocks();
+
+    // YouTube сам показал «подписок нет» — завершаем
+    if (round > 1 && $('ytd-message-renderer') && !getSubscribed().length) break;
+
     const list = getSubscribed();
     console.log(`📊 Раунд ${round}: подписок в DOM: ${list.length}`);
 
@@ -113,26 +150,25 @@
     empty = 0;
 
     for (const ch of list) {
-      // Сохраняем ссылку на родительскую полку перед удалением канала
       const parentShelf = ch.closest('ytd-shelf-renderer');
-      
-      if (await unsubOne(ch)) ok++; else fail++;
-      
-      // Удаляем сам канал
+      if (await unsubOne(ch)) stats.ok++; else stats.fail++;
       ch.remove();
-      
-      // Если полка осталась пустой — удаляем и её, чтобы не ломать скролл
-      if (parentShelf && !parentShelf.querySelector('ytd-channel-renderer')) {
-        parentShelf.remove();
-      }
-      
+      if (parentShelf && !parentShelf.querySelector('ytd-channel-renderer')) parentShelf.remove();
+      cleanEmptyBlocks();
       await sleep(PAUSE_BETWEEN);
     }
 
-    console.log(`📈 Промежуточно: ✅ ${ok}, ❌ ${fail}`);
+    console.log(`📈 Промежуточно: ✅ ${stats.ok}, ❌ ${stats.fail}`);
     await forceLoadMore();
   }
 
-  console.log(`🎉 ГОТОВО! Отписано: ${ok}, ошибок: ${fail}`);
-  console.log('ℹ️ Если каналы еще остались, обновите страницу (F5) и запустите повторно.');
+  cleanEmptyBlocks();
+  sessionStorage.setItem('unsub_stats', JSON.stringify(stats));
+  console.log(`🎉 ГОТОВО! Всего отписано: ${stats.ok}, ошибок: ${stats.fail}`);
+  if ($('ytd-continuation-item-renderer')) {
+    console.log('ℹ️ YouTube ещё не догрузил всё: нажмите F5 и запустите скрипт ещё раз — счёт продолжится с того же места.');
+  } else {
+    sessionStorage.removeItem('unsub_stats');
+    console.log('ℹ️ Подгрузок больше нет — список подписок очищен полностью.');
+  }
 })();
