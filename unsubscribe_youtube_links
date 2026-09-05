@@ -1,12 +1,12 @@
-(async function ultimateUnsubscribe() {
-  console.log('🚀 МАССОВАЯ ОТПИСКА v2 (фикс 403 и подгрузки)');
+(async function ultimateUnsubscribeV3() {
+  console.log('🚀 МАССОВАЯ ОТПИСКА v3 (фикс полок ytd-shelf-renderer и подгрузки)');
 
   const PAUSE_BETWEEN = 1500;
   const MAX_EMPTY_ROUNDS = 5;
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  // ✅ ОДИН клик — без дубля dispatchEvent (из-за него 403)
+  // ОДИН клик
   function click(el, desc = '') {
     if (!el) return;
     el.scrollIntoView({ block: 'center' });
@@ -25,8 +25,15 @@
     });
   }
 
-  // ✅ подписанные: атрибут ИЛИ текст кнопки (YouTube меняет разметку)
+  // Находим каналы и предварительно зачищаем пустые полки
   function getSubscribed() {
+    // Находим все полки и удаляем те, где уже нет каналов
+    document.querySelectorAll('ytd-shelf-renderer').forEach(shelf => {
+      if (!shelf.querySelector('ytd-channel-renderer')) {
+        shelf.remove();
+      }
+    });
+
     return [...document.querySelectorAll('ytd-channel-renderer')].filter(ch => {
       const btn = ch.querySelector('ytd-subscribe-button-renderer');
       if (!btn) return false;
@@ -73,8 +80,7 @@
     return true;
   }
 
-  // ✅ жёсткая подгрузка: скролл window + #content + событие scroll,
-  //    ждём появления НОВЫХ ytd-channel-renderer
+  // Жёсткая подгрузка с учетом очистки пустых полок
   async function forceLoadMore() {
     const content = document.querySelector('#content');
     const before = document.querySelectorAll('ytd-channel-renderer').length;
@@ -107,8 +113,19 @@
     empty = 0;
 
     for (const ch of list) {
+      // Сохраняем ссылку на родительскую полку перед удалением канала
+      const parentShelf = ch.closest('ytd-shelf-renderer');
+      
       if (await unsubOne(ch)) ok++; else fail++;
+      
+      // Удаляем сам канал
       ch.remove();
+      
+      // Если полка осталась пустой — удаляем и её, чтобы не ломать скролл
+      if (parentShelf && !parentShelf.querySelector('ytd-channel-renderer')) {
+        parentShelf.remove();
+      }
+      
       await sleep(PAUSE_BETWEEN);
     }
 
@@ -117,5 +134,5 @@
   }
 
   console.log(`🎉 ГОТОВО! Отписано: ${ok}, ошибок: ${fail}`);
-  console.log('ℹ️ Если каналы ещё остались — прокрути страницу и запусти скрипт ещё раз.');
+  console.log('ℹ️ Если каналы еще остались, обновите страницу (F5) и запустите повторно.');
 })();
